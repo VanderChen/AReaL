@@ -1,0 +1,78 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: areal-mbpp-grpo-4gpu
+  namespace: default
+spec:
+  backoffLimit: 0 # 失败后不重试，直接保留现场方便排查日志
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: areal-runtime
+        image: inclusionai/areal-runtime:v1.0.4-sglang
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/bash", "-c"]
+        # 容器启动命令：直接执行挂载目录下的启动脚本
+        args:
+        - |
+          sleep 100000000
+
+          python3 examples/mbpp_grpo/train_mbpp.py \
+            --config examples/mbpp_grpo/mbpp_grpo_config.yaml \
+            scheduler.type=local \
+            cluster.n_gpus_per_node=4 \
+            actor.path=/AReaL/model \
+            cluster.fileroot=/AReaL/output \
+            gconfig.max_new_tokens=512 \
+            actor.mb_spec.max_tokens_per_mb=2048 \
+            actor.gradient_checkpointing=true \
+            actor.weight_update_mode=disk \
+            ref.mb_spec.max_tokens_per_mb=2048 \
+            sglang.mem_fraction_static=0.3 \
+            train_dataset.batch_size=32 \
+            train_dataset.max_length=512 \
+            valid_dataset.batch_size=16
+        resources:
+          limits:
+            nvidia.com/gpu: "4"   # 严格分配 4 张 GPU
+            memory: 512Gi
+            cpu: "90"
+          requests:
+            nvidia.com/gpu: "4"
+            memory: 256Gi
+            cpu: "64"
+        volumeMounts:
+        - name: code-vol
+          mountPath: /AReaL/code_workspace # 【新增】专门存放我们独立出来的核心业务代码和配置
+        - name: dataset-vol
+          mountPath: /AReaL/mbpp           # 数据集路径
+        - name: model-vol
+          mountPath: /AReaL/model          # 预训练权重路径
+        - name: checkpoint-out-vol
+          mountPath: /AReaL/output         # 训练输出/权重保存路径
+        - name: dshm
+          mountPath: /dev/shm              # 核心：NCCL 共享内存
+      volumes:               
+      - name: code-vol
+        hostPath:
+          path: /root/examples/mbpp_grpo    # 宿主机上实际保存碎文件的代码目录
+          type: Directory
+      - name: dataset-vol
+        hostPath:
+          path: /mnt/paas/datasets/google-research-datasets/mbpp    # 宿主机上存放 mbpp_train.jsonl 和 mbpp_test.jsonl 的路径
+          type: Directory
+      - name: model-vol
+        hostPath:
+          path: /mnt/paas/checkpoints/Qwen/Qwen2.5-0.5B-Instruct
+          type: Directory
+      - name: checkpoint-out-vol
+        hostPath:
+          path: /mnt/paas/areal/output_mbpp
+          type: DirectoryOrCreate
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 128Gi
+      nodeSelector:
+        kubernetes.io/hostname: "192.168.2.12"
